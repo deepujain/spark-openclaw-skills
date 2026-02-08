@@ -31,8 +31,15 @@ fi
 
 echo "📦 Found $STORE_COUNT stores with sales"
 
-# Process each store
-echo "$STORES_JSON" | jq -c '.stores[]' | while read -r store; do
+# Save stores to temp file to avoid stdin issues with openclaw
+STORES_FILE="/tmp/stores-$$.json"
+echo "$STORES_JSON" | jq -c '.stores[]' > "$STORES_FILE"
+
+# Chrome path
+CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+# Process each store using for loop (avoids stdin conflicts)
+while IFS= read -r store <&3; do
   STORE_ID=$(echo "$store" | jq -r '.id')
   STORE_NAME=$(echo "$store" | jq -r '.name')
   TOTAL=$(echo "$store" | jq -r '.totalAmount')
@@ -47,19 +54,16 @@ echo "$STORES_JSON" | jq -c '.stores[]' | while read -r store; do
     -H "x-customer-id: ${CUSTOMER_ID}" \
     -o "$TEMP_HTML"
   
-  # Convert HTML to PDF using Chrome headless
-  CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-  
   if [ -x "$CHROME" ]; then
     # Use Chrome headless to convert HTML to PDF
     "$CHROME" --headless --disable-gpu --print-to-pdf="$TEMP_PDF" \
       --no-pdf-header-footer --print-to-pdf-no-header \
       "file://$TEMP_HTML" 2>/dev/null
     
-    # Send via OpenClaw WhatsApp
+    # Send via OpenClaw WhatsApp (redirect stdin to avoid interactive prompts)
     openclaw message send --channel whatsapp --target "$WHATSAPP_TO" \
       --message "📄 Invoice Report: ${STORE_NAME} - ${YESTERDAY}" \
-      --media "$TEMP_PDF"
+      --media "$TEMP_PDF" </dev/null
     
     echo "  ✅ Sent: $STORE_NAME"
     rm -f "$TEMP_HTML" "$TEMP_PDF"
@@ -67,9 +71,12 @@ echo "$STORES_JSON" | jq -c '.stores[]' | while read -r store; do
     echo "  ⚠️ Chrome not found, sending HTML"
     openclaw message send --channel whatsapp --target "$WHATSAPP_TO" \
       --message "📄 Invoice Report: ${STORE_NAME} - ${YESTERDAY}" \
-      --media "$TEMP_HTML"
+      --media "$TEMP_HTML" </dev/null
     rm -f "$TEMP_HTML"
   fi
-done
+done 3< "$STORES_FILE"
+
+# Cleanup
+rm -f "$STORES_FILE"
 
 echo "✅ All invoices processed for $YESTERDAY"
