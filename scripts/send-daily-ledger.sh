@@ -1,9 +1,17 @@
 #!/bin/bash
 # Daily Ledger Automation Script
 # Sends monthly ledger statements (1st of month to today) to WhatsApp groups
-# Run via: crontab -e -> 5 8 * * * /Users/dejain/.openclaw/scripts/send-daily-ledger.sh
+# Usage: ./send-daily-ledger.sh [--send]
+#   --send    Actually send messages (default: dry run)
+# Cron: 30 8 * * * /Users/dejain/.openclaw/scripts/send-daily-ledger.sh --send
 
 set -e
+
+# Parse arguments
+SEND_ENABLED=false
+if [ "$1" = "--send" ]; then
+  SEND_ENABLED=true
+fi
 
 # Configuration
 CUSTOMER_ID="customer-suryodayaservicestation-001"
@@ -51,6 +59,12 @@ START_DISPLAY=$(date -j -f "%Y-%m-%d" "$START_DATE" +"%d %b %Y")
 END_DISPLAY=$(date +"%d %b %Y")
 
 echo "📅 Processing ledger statements: $START_DISPLAY to $END_DISPLAY"
+
+if [ "$SEND_ENABLED" = true ]; then
+  echo "📤 Mode: SENDING ENABLED"
+else
+  echo "🔍 Mode: DRY RUN (use --send to actually send)"
+fi
 
 # Get list of stores with ledger data
 echo "🔍 Fetching stores with ledger data..."
@@ -100,39 +114,44 @@ while IFS= read -r store <&3; do
     -H "x-customer-id: ${CUSTOMER_ID}" \
     -o "$TEMP_HTML"
   
-  if [ -x "$CHROME" ]; then
-    # Use Chrome headless to convert HTML to PDF
-    "$CHROME" --headless --disable-gpu --print-to-pdf="$TEMP_PDF_SIMPLE" \
-      --no-pdf-header-footer --print-to-pdf-no-header \
-      "file://$TEMP_HTML" 2>/dev/null
-    
-    # Rename to proper filename
-    mv "$TEMP_PDF_SIMPLE" "$TEMP_PDF"
-    
-    # Send polite message first
-    openclaw message send --channel whatsapp --target "$WHATSAPP_TARGET" \
-      --message "Dear ${STORE_NAME},
+  if [ "$SEND_ENABLED" = true ]; then
+    if [ -x "$CHROME" ]; then
+      # Use Chrome headless to convert HTML to PDF
+      "$CHROME" --headless --disable-gpu --print-to-pdf="$TEMP_PDF_SIMPLE" \
+        --no-pdf-header-footer --print-to-pdf-no-header \
+        "file://$TEMP_HTML" 2>/dev/null
+      
+      # Rename to proper filename
+      mv "$TEMP_PDF_SIMPLE" "$TEMP_PDF"
+      
+      # Send polite message first
+      openclaw message send --channel whatsapp --target "$WHATSAPP_TARGET" \
+        --message "Dear ${STORE_NAME},
 
 Please find the ledger statement from ${START_DISPLAY} to ${END_DISPLAY}.
 
 Thank you for your business! 🙏" </dev/null
-    
-    # Then send the PDF with filename as caption
-    openclaw message send --channel whatsapp --target "$WHATSAPP_TARGET" \
-      --message "📎 Ledger Statement - ${STORE_NAME} - ${END_DISPLAY}.pdf" --media "$TEMP_PDF" </dev/null
-    
-    echo "  ✅ Sent: $STORE_NAME → $WHATSAPP_TARGET"
-    rm -f "$TEMP_HTML" "$TEMP_PDF"
+      
+      # Then send the PDF with filename as caption
+      openclaw message send --channel whatsapp --target "$WHATSAPP_TARGET" \
+        --message "📎 Ledger Statement - ${STORE_NAME} - ${END_DISPLAY}.pdf" --media "$TEMP_PDF" </dev/null
+      
+      echo "  ✅ Sent: $STORE_NAME → $WHATSAPP_TARGET"
+      rm -f "$TEMP_HTML" "$TEMP_PDF"
+    else
+      echo "  ⚠️ Chrome not found, sending HTML"
+      openclaw message send --channel whatsapp --target "$WHATSAPP_TARGET" \
+        --message "Dear ${STORE_NAME},
+
+Please find the ledger statement from ${START_DISPLAY} to ${END_DISPLAY}.
+
+Thank you for your business! 🙏" </dev/null
+      openclaw message send --channel whatsapp --target "$WHATSAPP_TARGET" \
+        --message "📎 Ledger Statement - ${STORE_NAME} - ${END_DISPLAY}.html" --media "$TEMP_HTML" </dev/null
+      rm -f "$TEMP_HTML"
+    fi
   else
-    echo "  ⚠️ Chrome not found, sending HTML"
-    openclaw message send --channel whatsapp --target "$WHATSAPP_TARGET" \
-      --message "Dear ${STORE_NAME},
-
-Please find the ledger statement from ${START_DISPLAY} to ${END_DISPLAY}.
-
-Thank you for your business! 🙏" </dev/null
-    openclaw message send --channel whatsapp --target "$WHATSAPP_TARGET" \
-      --message "📎 Ledger Statement - ${STORE_NAME} - ${END_DISPLAY}.html" --media "$TEMP_HTML" </dev/null
+    echo "  ⏭️ Skipped (dry run): $STORE_NAME"
     rm -f "$TEMP_HTML"
   fi
 done 3< "$STORES_FILE"

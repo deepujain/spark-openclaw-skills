@@ -1,9 +1,17 @@
 #!/bin/bash
 # Daily Invoice Automation Script
 # Fetches retail credit invoices from Spark and sends via WhatsApp
-# Run via: crontab -e -> 0 8 * * * /Users/dejain/.openclaw/scripts/send-daily-invoices.sh
+# Usage: ./send-daily-invoices.sh [--send]
+#   --send    Actually send messages (default: dry run)
+# Cron: 0 8 * * * /Users/dejain/.openclaw/scripts/send-daily-invoices.sh --send
 
 set -e
+
+# Parse arguments
+SEND_ENABLED=false
+if [ "$1" = "--send" ]; then
+  SEND_ENABLED=true
+fi
 
 # Configuration
 CUSTOMER_ID="customer-suryodayaservicestation-001"
@@ -49,6 +57,12 @@ YESTERDAY=$(date -v-1d +%Y-%m-%d)
 YESTERDAY_DISPLAY=$(date -v-1d +"%d %b %Y")
 echo "📅 Processing invoices for: $YESTERDAY_DISPLAY"
 
+if [ "$SEND_ENABLED" = true ]; then
+  echo "📤 Mode: SENDING ENABLED"
+else
+  echo "🔍 Mode: DRY RUN (use --send to actually send)"
+fi
+
 # Get list of stores with sales
 echo "🔍 Fetching stores with credit sales..."
 STORES_JSON=$(curl -s "${API_BASE}/api/retail-credit-sales/daily-invoices?date=${YESTERDAY}" \
@@ -59,8 +73,9 @@ STORE_COUNT=$(echo "$STORES_JSON" | jq -r '.storeCount // 0')
 
 if [ "$STORE_COUNT" -eq 0 ]; then
   echo "ℹ️ No credit sales found for $YESTERDAY"
-  # Optionally notify via WhatsApp
-  openclaw message send --channel whatsapp --target "$FALLBACK_NUMBER" --message "📊 No retail credit sales recorded on $YESTERDAY" </dev/null
+  if [ "$SEND_ENABLED" = true ]; then
+    openclaw message send --channel whatsapp --target "$FALLBACK_NUMBER" --message "📊 No retail credit sales recorded on $YESTERDAY" </dev/null
+  fi
   exit 0
 fi
 
@@ -98,39 +113,44 @@ while IFS= read -r store <&3; do
     -H "x-customer-id: ${CUSTOMER_ID}" \
     -o "$TEMP_HTML"
   
-  if [ -x "$CHROME" ]; then
-    # Use Chrome headless to convert HTML to PDF
-    "$CHROME" --headless --disable-gpu --print-to-pdf="$TEMP_PDF_SIMPLE" \
-      --no-pdf-header-footer --print-to-pdf-no-header \
-      "file://$TEMP_HTML" 2>/dev/null
-    
-    # Rename to proper filename
-    mv "$TEMP_PDF_SIMPLE" "$TEMP_PDF"
-    
-    # Send polite message first
-    openclaw message send --channel whatsapp --target "$WHATSAPP_TARGET" \
-      --message "Dear ${STORE_NAME},
+  if [ "$SEND_ENABLED" = true ]; then
+    if [ -x "$CHROME" ]; then
+      # Use Chrome headless to convert HTML to PDF
+      "$CHROME" --headless --disable-gpu --print-to-pdf="$TEMP_PDF_SIMPLE" \
+        --no-pdf-header-footer --print-to-pdf-no-header \
+        "file://$TEMP_HTML" 2>/dev/null
+      
+      # Rename to proper filename
+      mv "$TEMP_PDF_SIMPLE" "$TEMP_PDF"
+      
+      # Send polite message first
+      openclaw message send --channel whatsapp --target "$WHATSAPP_TARGET" \
+        --message "Dear ${STORE_NAME},
 
 Please find the invoice report of all credit sales on ${YESTERDAY_DISPLAY}.
 
 Thank you for your business! 🙏" </dev/null
-    
-    # Then send the PDF with filename as caption
-    openclaw message send --channel whatsapp --target "$WHATSAPP_TARGET" \
-      --message "📎 Invoice Report - ${STORE_NAME} - ${YESTERDAY_DISPLAY}.pdf" --media "$TEMP_PDF" </dev/null
-    
-    echo "  ✅ Sent: $STORE_NAME → $WHATSAPP_TARGET"
-    rm -f "$TEMP_HTML" "$TEMP_PDF"
+      
+      # Then send the PDF with filename as caption
+      openclaw message send --channel whatsapp --target "$WHATSAPP_TARGET" \
+        --message "📎 Invoice Report - ${STORE_NAME} - ${YESTERDAY_DISPLAY}.pdf" --media "$TEMP_PDF" </dev/null
+      
+      echo "  ✅ Sent: $STORE_NAME → $WHATSAPP_TARGET"
+      rm -f "$TEMP_HTML" "$TEMP_PDF"
+    else
+      echo "  ⚠️ Chrome not found, sending HTML"
+      openclaw message send --channel whatsapp --target "$WHATSAPP_TARGET" \
+        --message "Dear ${STORE_NAME},
+
+Please find the invoice report of all credit sales on ${YESTERDAY_DISPLAY}.
+
+Thank you for your business! 🙏" </dev/null
+      openclaw message send --channel whatsapp --target "$WHATSAPP_TARGET" \
+        --message "📎 Invoice Report - ${STORE_NAME} - ${YESTERDAY_DISPLAY}.html" --media "$TEMP_HTML" </dev/null
+      rm -f "$TEMP_HTML"
+    fi
   else
-    echo "  ⚠️ Chrome not found, sending HTML"
-    openclaw message send --channel whatsapp --target "$WHATSAPP_TARGET" \
-      --message "Dear ${STORE_NAME},
-
-Please find the invoice report of all credit sales on ${YESTERDAY_DISPLAY}.
-
-Thank you for your business! 🙏" </dev/null
-    openclaw message send --channel whatsapp --target "$WHATSAPP_TARGET" \
-      --message "📎 Invoice Report - ${STORE_NAME} - ${YESTERDAY_DISPLAY}.html" --media "$TEMP_HTML" </dev/null
+    echo "  ⏭️ Skipped (dry run): $STORE_NAME"
     rm -f "$TEMP_HTML"
   fi
 done 3< "$STORES_FILE"
